@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check active streams on Emby and Jellyfin servers."""
 
+__version__ = "1.0.0"
+
 import json
 import os
 import sys
