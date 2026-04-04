@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check active streams on Emby and Jellyfin, and encoding jobs on Sonarr/Radarr."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import json
 import os
