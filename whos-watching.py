@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Check active streams on Emby and Jellyfin servers."""
+"""Check active streams on Emby and Jellyfin, and encoding jobs on Sonarr/Radarr."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 import json
 import os
+import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +38,13 @@ EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
 EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://localhost:8097")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
+
+# SSH host where sonarr/radarr containers run (set to "" to skip encoding checks)
+ENCODE_SSH_HOST = os.environ.get("ENCODE_SSH_HOST", "eucentral-arch-media")
+# Comma-separated list of container names to check for ffmpeg processes
+ENCODE_CONTAINERS = os.environ.get("ENCODE_CONTAINERS", "sonarr,radarr")
+# Use sudo for docker commands (set to "true" if user is not in docker group)
+ENCODE_USE_SUDO = os.environ.get("ENCODE_USE_SUDO", "true").lower() in ("true", "1", "yes")
 
 # ── Colors ───────────────────────────────────────────────────────────────────
 
@@ -155,6 +164,83 @@ def check_jellyfin() -> list[dict]:
     return active
 
 
+# ── Encoding (mp4_automator / ffmpeg) ────────────────────────────────────────
+
+def check_encoding(container: str) -> list[dict]:
+    """Check for running ffmpeg processes inside a Docker container via SSH."""
+    try:
+        # Get full ffmpeg command lines from the container
+        sudo = "sudo " if ENCODE_USE_SUDO else ""
+        result = subprocess.run(
+            [
+                "ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+                ENCODE_SSH_HOST,
+                f"{sudo}docker exec {container} ps -eo pid,etimes,args 2>/dev/null"
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            print(f"  {C.RED}✗ Could not reach container '{container}' on {ENCODE_SSH_HOST}{C.RESET}")
+            return []
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        print(f"  {C.RED}✗ SSH to {ENCODE_SSH_HOST} failed: {e}{C.RESET}")
+        return []
+
+    encodes = []
+    for line in result.stdout.strip().splitlines():
+        if "ffmpeg" not in line or "ps -eo" in line:
+            continue
+
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+
+        pid, elapsed_str, cmdline = parts
+        try:
+            elapsed_secs = int(elapsed_str)
+        except ValueError:
+            elapsed_secs = 0
+
+        # Try to extract input filename from -i argument
+        input_file = "Unknown"
+        m = re.search(r'-i\s+"?([^"]+)"?', cmdline)
+        if m:
+            input_file = Path(m.group(1)).name
+        else:
+            # Fallback: grab last argument that looks like a media file
+            tokens = cmdline.split()
+            for token in reversed(tokens):
+                if re.search(r'\.(mkv|mp4|avi|m4v|ts|wmv)$', token, re.IGNORECASE):
+                    input_file = Path(token).name
+                    break
+
+        # Format elapsed time
+        hours, remainder = divmod(elapsed_secs, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        elapsed_fmt = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+        encodes.append({
+            "pid": pid,
+            "file": input_file,
+            "elapsed": elapsed_fmt,
+            "container": container,
+        })
+
+    return encodes
+
+
+def print_encodes(encodes: list[dict]) -> None:
+    """Pretty-print active encoding jobs."""
+    if not encodes:
+        print(f"  {C.DIM}No active encodes.{C.RESET}")
+        return
+
+    for i, e in enumerate(encodes, 1):
+        print(f"  {C.BOLD}{i}.{C.RESET} {C.YELLOW}⚙  Encoding{C.RESET}: {C.WHITE}{C.BOLD}{e['file']}{C.RESET}")
+        print(f"     Container: {C.CYAN}{e['container']}{C.RESET}  PID: {e['pid']}  Elapsed: {C.MAGENTA}{e['elapsed']}{C.RESET}")
+        print()
+
+
 # ── Output ───────────────────────────────────────────────────────────────────
 
 def print_streams(service: str, streams: list[dict]) -> None:
@@ -181,14 +267,13 @@ def print_streams(service: str, streams: list[dict]) -> None:
 
 def main() -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{C.BOLD}{C.WHITE}═══ Stream Check — {timestamp} ═══{C.RESET}\n")
-
-    if not EMBY_API_KEY and not JELLYFIN_API_KEY:
-        print(f"{C.RED}No API keys configured. Copy .env.example to .env and add your keys.{C.RESET}")
-        sys.exit(1)
+    print(f"{C.BOLD}{C.WHITE}═══ Media Status — {timestamp} ═══{C.RESET}\n")
 
     emby_streams = []
     jf_streams = []
+    all_encodes = []
+
+    # ── Streams ──
 
     if EMBY_API_KEY:
         print(f"{C.BOLD}{C.GREEN}┌─ Emby ─────────────────────────────{C.RESET}")
@@ -206,9 +291,26 @@ def main() -> None:
         print(f"{C.DIM}┌─ Jellyfin ──────────── (skipped, no API key){C.RESET}")
         print()
 
-    total = len(emby_streams) + len(jf_streams)
-    color = C.GREEN if total == 0 else C.CYAN
-    print(f"{C.BOLD}── Total active streams: {color}{total}{C.RESET}")
+    # ── Encoding ──
+
+    if ENCODE_SSH_HOST:
+        containers = [c.strip() for c in ENCODE_CONTAINERS.split(",") if c.strip()]
+        print(f"{C.BOLD}{C.YELLOW}┌─ Encoding ({ENCODE_SSH_HOST}) ──────────────{C.RESET}")
+        for container in containers:
+            encodes = check_encoding(container)
+            all_encodes.extend(encodes)
+        print_encodes(all_encodes)
+    else:
+        print(f"{C.DIM}┌─ Encoding ──────────── (skipped, no SSH host){C.RESET}")
+        print()
+
+    # ── Summary ──
+
+    total_streams = len(emby_streams) + len(jf_streams)
+    total_encodes = len(all_encodes)
+    s_color = C.GREEN if total_streams == 0 else C.CYAN
+    e_color = C.GREEN if total_encodes == 0 else C.YELLOW
+    print(f"{C.BOLD}── Streams: {s_color}{total_streams}{C.RESET}  {C.BOLD}Encodes: {e_color}{total_encodes}{C.RESET}")
 
 
 if __name__ == "__main__":
