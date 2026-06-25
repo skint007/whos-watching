@@ -14,12 +14,16 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError
 
 # ── Configuration ────────────────────────────────────────────────────────────
-# Loaded from a .env file in the same directory as this script.
-# Copy .env.example to .env and fill in your values.
+# Loaded from a .env file. Searched in priority order:
+#   1. $XDG_CONFIG_HOME/whos-watching/.env (or ~/.config/whos-watching/.env)
+#   2. ./.env (current working directory)
+#   3. a .env next to this script (handy when running from a source checkout)
+# Real environment variables always take precedence over .env values.
+# Copy .env.example to one of those locations and fill in your values.
 
 
 def load_dotenv(env_path: Path) -> None:
-    """Load key=value pairs from a .env file into os.environ."""
+    """Load key=value pairs from a .env file into os.environ (existing vars win)."""
     if not env_path.exists():
         return
     with open(env_path) as f:
@@ -32,15 +36,27 @@ def load_dotenv(env_path: Path) -> None:
                 os.environ.setdefault(key.strip(), value.strip())
 
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+def config_dotenv_paths() -> list[Path]:
+    """Return candidate .env locations in priority order."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    config_home = Path(xdg) if xdg else Path.home() / ".config"
+    return [
+        config_home / "whos-watching" / ".env",
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent / ".env",
+    ]
 
-EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
-EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "")
+
+for _env_path in config_dotenv_paths():
+    load_dotenv(_env_path)
+
+# EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
+# EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://localhost:8097")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
 
-# SSH host where sonarr/radarr containers run (set to "" to skip encoding checks)
-ENCODE_SSH_HOST = os.environ.get("ENCODE_SSH_HOST", "eucentral-arch-media")
+# SSH host where sonarr/radarr containers run (leave empty to skip encoding checks)
+ENCODE_SSH_HOST = os.environ.get("ENCODE_SSH_HOST", "")
 # Comma-separated list of container names to check for ffmpeg processes
 ENCODE_CONTAINERS = os.environ.get("ENCODE_CONTAINERS", "sonarr,radarr")
 # Use sudo for docker commands (set to "true" if user is not in docker group)
@@ -93,38 +109,38 @@ def format_pct(position_ticks: int | None, runtime_ticks: int | None) -> str:
 
 # ── Emby ─────────────────────────────────────────────────────────────────────
 
-def check_emby() -> list[dict]:
-    """Return list of active Emby streams."""
-    url = f"{EMBY_URL}/emby/Sessions?api_key={EMBY_API_KEY}"
-    try:
-        sessions = api_get(url)
-    except (URLError, OSError) as e:
-        print(f"  {C.RED}✗ Could not reach Emby: {e}{C.RESET}")
-        return []
+# def check_emby() -> list[dict]:
+#     """Return list of active Emby streams."""
+#     url = f"{EMBY_URL}/emby/Sessions?api_key={EMBY_API_KEY}"
+#     try:
+#         sessions = api_get(url)
+#     except (URLError, OSError) as e:
+#         print(f"  {C.RED}✗ Could not reach Emby: {e}{C.RESET}")
+#         return []
 
-    active = []
-    for s in sessions:
-        now_playing = s.get("NowPlayingItem")
-        if not now_playing:
-            continue
+#     active = []
+#     for s in sessions:
+#         now_playing = s.get("NowPlayingItem")
+#         if not now_playing:
+#             continue
 
-        play_state = s.get("PlayState", {})
-        active.append({
-            "user": s.get("UserName", "Unknown"),
-            "client": s.get("Client", "Unknown"),
-            "device": s.get("DeviceName", "Unknown"),
-            "title": now_playing.get("Name", "Unknown"),
-            "series": now_playing.get("SeriesName"),
-            "type": now_playing.get("Type", "Unknown"),
-            "position": format_ticks(play_state.get("PositionTicks")),
-            "runtime": format_ticks(now_playing.get("RunTimeTicks")),
-            "pct": format_pct(
-                play_state.get("PositionTicks"),
-                now_playing.get("RunTimeTicks"),
-            ),
-            "paused": play_state.get("IsPaused", False),
-        })
-    return active
+#         play_state = s.get("PlayState", {})
+#         active.append({
+#             "user": s.get("UserName", "Unknown"),
+#             "client": s.get("Client", "Unknown"),
+#             "device": s.get("DeviceName", "Unknown"),
+#             "title": now_playing.get("Name", "Unknown"),
+#             "series": now_playing.get("SeriesName"),
+#             "type": now_playing.get("Type", "Unknown"),
+#             "position": format_ticks(play_state.get("PositionTicks")),
+#             "runtime": format_ticks(now_playing.get("RunTimeTicks")),
+#             "pct": format_pct(
+#                 play_state.get("PositionTicks"),
+#                 now_playing.get("RunTimeTicks"),
+#             ),
+#             "paused": play_state.get("IsPaused", False),
+#         })
+#     return active
 
 
 # ── Jellyfin ─────────────────────────────────────────────────────────────────
@@ -269,19 +285,19 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{C.BOLD}{C.WHITE}═══ Media Status — {timestamp} ═══{C.RESET}\n")
 
-    emby_streams = []
+    # emby_streams = []
     jf_streams = []
     all_encodes = []
 
     # ── Streams ──
 
-    if EMBY_API_KEY:
-        print(f"{C.BOLD}{C.GREEN}┌─ Emby ─────────────────────────────{C.RESET}")
-        emby_streams = check_emby()
-        print_streams("Emby", emby_streams)
-    else:
-        print(f"{C.DIM}┌─ Emby ──────────────── (skipped, no API key){C.RESET}")
-        print()
+    # if EMBY_API_KEY:
+    #     print(f"{C.BOLD}{C.GREEN}┌─ Emby ─────────────────────────────{C.RESET}")
+    #     emby_streams = check_emby()
+    #     print_streams("Emby", emby_streams)
+    # else:
+    #     print(f"{C.DIM}┌─ Emby ──────────────── (skipped, no API key){C.RESET}")
+    #     print()
 
     if JELLYFIN_API_KEY:
         print(f"{C.BOLD}{C.BLUE}┌─ Jellyfin ─────────────────────────{C.RESET}")
@@ -306,7 +322,8 @@ def main() -> None:
 
     # ── Summary ──
 
-    total_streams = len(emby_streams) + len(jf_streams)
+    total_streams = len(jf_streams)
+    # total_streams = len(emby_streams) + len(jf_streams)
     total_encodes = len(all_encodes)
     s_color = C.GREEN if total_streams == 0 else C.CYAN
     e_color = C.GREEN if total_encodes == 0 else C.YELLOW

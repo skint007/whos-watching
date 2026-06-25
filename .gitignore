@@ -1,1 +1,13 @@
 .env
+
+# Python
+__pycache__/
+*.pyc
+
+# makepkg / paw build artifacts
+/aur/src/
+/aur/pkg/
+/aur/*.pkg.tar.zst
+/aur/*.tar.gz
+/aur/.SRCINFO
+/aur/whos-watching/

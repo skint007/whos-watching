@@ -1,57 +1,97 @@
 # Who's Watching?
 
-A command-line tool to check active streams on your [Emby](https://emby.media/) and [Jellyfin](https://jellyfin.org/) media servers.
+A command-line tool to check active streams on your [Jellyfin](https://jellyfin.org/)
+(and [Emby](https://emby.media/)) media servers, plus any in-progress ffmpeg encoding
+jobs running inside your Sonarr/Radarr Docker containers.
 
 ## Features
 
-- Queries Emby and Jellyfin sessions for active streams
+- Queries Jellyfin sessions for active streams (Emby support is included in the source, commented out)
 - Displays user, client, device, title, progress, and play state (playing/paused)
+- Shows running ffmpeg encodes inside remote Docker containers over SSH (Sonarr/Radarr)
 - Supports series names for TV episodes
 - Colorized terminal output (auto-disabled when piped)
-- No external dependencies — uses only the Python standard library
+- No external Python dependencies — uses only the standard library
 
 ## Requirements
 
 - Python 3.10+
+- `openssh` and SSH access to the encoding host — only if you use encoding-job monitoring
 
-## Setup
+## Installation
 
-1. Copy the example environment file and fill in your values:
+### Via [paw](https://github.com/skint007/paw) (recommended)
 
-   ```sh
-   cp .env.example .env
-   ```
+```sh
+paw whos-watching
+```
 
-2. Edit `.env` with your server URLs and API keys:
+This installs the `whos-watching` command system-wide.
 
-   ```
-   EMBY_URL=http://localhost:8096
-   EMBY_API_KEY=your_emby_api_key_here
+### From source
 
-   JELLYFIN_URL=http://localhost:8097
-   JELLYFIN_API_KEY=your_jellyfin_api_key_here
-   ```
+```sh
+git clone https://github.com/skint007/whos-watching.git
+cd whos-watching
+python whos-watching.py
+```
 
-   Leave an API key blank to skip that server.
+## Configuration
+
+Configuration is read from a `.env` file, searched in this order (real environment
+variables always take precedence):
+
+1. `~/.config/whos-watching/.env` (or `$XDG_CONFIG_HOME/whos-watching/.env`)
+2. `./.env` in the current working directory
+3. a `.env` next to the script (handy when running from a checkout)
+
+For an installed package, put your config in `~/.config/whos-watching/.env`:
+
+```sh
+mkdir -p ~/.config/whos-watching
+cp /usr/share/doc/whos-watching/env.example ~/.config/whos-watching/.env
+$EDITOR ~/.config/whos-watching/.env
+```
+
+Available settings:
+
+```
+JELLYFIN_URL=http://localhost:8097
+JELLYFIN_API_KEY=your_jellyfin_api_key_here
+
+# Encoding-job monitoring (leave ENCODE_SSH_HOST empty to skip)
+ENCODE_SSH_HOST=
+ENCODE_CONTAINERS=sonarr,radarr
+ENCODE_USE_SUDO=false
+```
+
+Leave an API key blank to skip that service; leave `ENCODE_SSH_HOST` blank to skip
+encoding checks.
 
 ## Usage
 
 ```sh
-python whos-watching.py
+whos-watching          # if installed via paw
+python whos-watching.py  # from a source checkout
 ```
 
 Example output:
 
 ```
-═══ Stream Check — 2026-04-04 20:15:00 ═══
+═══ Media Status — 2026-04-04 20:15:00 ═══
 
-┌─ Emby ─────────────────────────────
-  1. Alice on Emby Theater (Living Room TV)
+┌─ Jellyfin ─────────────────────────
+  1. Alice on Jellyfin Web (Living Room TV)
      ▶  Playing: Breaking Bad — Ozymandias
      Progress: 00:32:15 / 00:47:12 (68%)
 
-┌─ Jellyfin ─────────────────────────
-  No active streams.
+┌─ Encoding (media-host) ──────────────
+  1. ⚙  Encoding: The.Movie.2024.mkv
+     Container: radarr  PID: 1234  Elapsed: 00:08:42
 
-── Total active streams: 1
+── Streams: 1  Encodes: 1
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
