@@ -50,8 +50,8 @@ def config_dotenv_paths() -> list[Path]:
 for _env_path in config_dotenv_paths():
     load_dotenv(_env_path)
 
-# EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
-# EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "")
+EMBY_URL = os.environ.get("EMBY_URL", "http://localhost:8096")
+EMBY_API_KEY = os.environ.get("EMBY_API_KEY", "")
 JELLYFIN_URL = os.environ.get("JELLYFIN_URL", "http://localhost:8097")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
 
@@ -107,54 +107,10 @@ def format_pct(position_ticks: int | None, runtime_ticks: int | None) -> str:
     return f" ({pct:.0f}%)"
 
 
-# ── Emby ─────────────────────────────────────────────────────────────────────
+# ── Streams (Emby / Jellyfin) ────────────────────────────────────────────────
 
-# def check_emby() -> list[dict]:
-#     """Return list of active Emby streams."""
-#     url = f"{EMBY_URL}/emby/Sessions?api_key={EMBY_API_KEY}"
-#     try:
-#         sessions = api_get(url)
-#     except (URLError, OSError) as e:
-#         print(f"  {C.RED}✗ Could not reach Emby: {e}{C.RESET}")
-#         return []
-
-#     active = []
-#     for s in sessions:
-#         now_playing = s.get("NowPlayingItem")
-#         if not now_playing:
-#             continue
-
-#         play_state = s.get("PlayState", {})
-#         active.append({
-#             "user": s.get("UserName", "Unknown"),
-#             "client": s.get("Client", "Unknown"),
-#             "device": s.get("DeviceName", "Unknown"),
-#             "title": now_playing.get("Name", "Unknown"),
-#             "series": now_playing.get("SeriesName"),
-#             "type": now_playing.get("Type", "Unknown"),
-#             "position": format_ticks(play_state.get("PositionTicks")),
-#             "runtime": format_ticks(now_playing.get("RunTimeTicks")),
-#             "pct": format_pct(
-#                 play_state.get("PositionTicks"),
-#                 now_playing.get("RunTimeTicks"),
-#             ),
-#             "paused": play_state.get("IsPaused", False),
-#         })
-#     return active
-
-
-# ── Jellyfin ─────────────────────────────────────────────────────────────────
-
-def check_jellyfin() -> list[dict]:
-    """Return list of active Jellyfin streams."""
-    url = f"{JELLYFIN_URL}/Sessions"
-    headers = {"X-Emby-Token": JELLYFIN_API_KEY}
-    try:
-        sessions = api_get(url, headers=headers)
-    except (URLError, OSError) as e:
-        print(f"  {C.RED}✗ Could not reach Jellyfin: {e}{C.RESET}")
-        return []
-
+def parse_sessions(sessions: list) -> list[dict]:
+    """Extract active streams from an Emby/Jellyfin Sessions response."""
     active = []
     for s in sessions:
         now_playing = s.get("NowPlayingItem")
@@ -178,6 +134,40 @@ def check_jellyfin() -> list[dict]:
             "paused": play_state.get("IsPaused", False),
         })
     return active
+
+
+def check_streams(name: str, url: str, headers: dict | None = None) -> list[dict]:
+    """Fetch and parse active streams from an Emby/Jellyfin server."""
+    try:
+        sessions = api_get(url, headers=headers)
+    except (URLError, OSError) as e:
+        print(f"  {C.RED}✗ Could not reach {name}: {e}{C.RESET}")
+        return []
+    return parse_sessions(sessions)
+
+
+def configured_services() -> list[dict]:
+    """Streaming services that have an API key set, in display order.
+
+    Only services with a key appear, so the tool supports Emby and Jellyfin
+    side by side and silently omits whichever one you haven't configured.
+    """
+    services = []
+    if EMBY_API_KEY:
+        services.append({
+            "name": "Emby",
+            "color": C.GREEN,
+            "url": f"{EMBY_URL}/emby/Sessions?api_key={EMBY_API_KEY}",
+            "headers": None,
+        })
+    if JELLYFIN_API_KEY:
+        services.append({
+            "name": "Jellyfin",
+            "color": C.BLUE,
+            "url": f"{JELLYFIN_URL}/Sessions",
+            "headers": {"X-Emby-Token": JELLYFIN_API_KEY},
+        })
+    return services
 
 
 # ── Encoding (mp4_automator / ffmpeg) ────────────────────────────────────────
@@ -259,6 +249,12 @@ def print_encodes(encodes: list[dict]) -> None:
 
 # ── Output ───────────────────────────────────────────────────────────────────
 
+def section_header(label: str, color: str) -> None:
+    """Print a box-drawing section header padded to a consistent width."""
+    title = f"┌─ {label} "
+    print(f"{C.BOLD}{color}{title}{'─' * max(3, 38 - len(title))}{C.RESET}")
+
+
 def print_streams(service: str, streams: list[dict]) -> None:
     """Pretty-print active streams for a service."""
     if not streams:
@@ -285,45 +281,33 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"{C.BOLD}{C.WHITE}═══ Media Status — {timestamp} ═══{C.RESET}\n")
 
-    # emby_streams = []
-    jf_streams = []
+    services = configured_services()
+    total_streams = 0
     all_encodes = []
 
-    # ── Streams ──
+    if not services and not ENCODE_SSH_HOST:
+        print(f"  {C.DIM}Nothing configured. Add API keys to "
+              f"~/.config/whos-watching/.env (see env.example).{C.RESET}\n")
 
-    # if EMBY_API_KEY:
-    #     print(f"{C.BOLD}{C.GREEN}┌─ Emby ─────────────────────────────{C.RESET}")
-    #     emby_streams = check_emby()
-    #     print_streams("Emby", emby_streams)
-    # else:
-    #     print(f"{C.DIM}┌─ Emby ──────────────── (skipped, no API key){C.RESET}")
-    #     print()
+    # ── Streams ── (only services with an API key are shown)
 
-    if JELLYFIN_API_KEY:
-        print(f"{C.BOLD}{C.BLUE}┌─ Jellyfin ─────────────────────────{C.RESET}")
-        jf_streams = check_jellyfin()
-        print_streams("Jellyfin", jf_streams)
-    else:
-        print(f"{C.DIM}┌─ Jellyfin ──────────── (skipped, no API key){C.RESET}")
-        print()
+    for svc in services:
+        section_header(svc["name"], svc["color"])
+        streams = check_streams(svc["name"], svc["url"], svc["headers"])
+        print_streams(svc["name"], streams)
+        total_streams += len(streams)
 
     # ── Encoding ──
 
     if ENCODE_SSH_HOST:
         containers = [c.strip() for c in ENCODE_CONTAINERS.split(",") if c.strip()]
-        print(f"{C.BOLD}{C.YELLOW}┌─ Encoding ({ENCODE_SSH_HOST}) ──────────────{C.RESET}")
+        section_header(f"Encoding ({ENCODE_SSH_HOST})", C.YELLOW)
         for container in containers:
-            encodes = check_encoding(container)
-            all_encodes.extend(encodes)
+            all_encodes.extend(check_encoding(container))
         print_encodes(all_encodes)
-    else:
-        print(f"{C.DIM}┌─ Encoding ──────────── (skipped, no SSH host){C.RESET}")
-        print()
 
     # ── Summary ──
 
-    total_streams = len(jf_streams)
-    # total_streams = len(emby_streams) + len(jf_streams)
     total_encodes = len(all_encodes)
     s_color = C.GREEN if total_streams == 0 else C.CYAN
     e_color = C.GREEN if total_encodes == 0 else C.YELLOW

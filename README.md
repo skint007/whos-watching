@@ -6,7 +6,7 @@ jobs running inside your Sonarr/Radarr Docker containers.
 
 ## Features
 
-- Queries Jellyfin sessions for active streams (Emby support is included in the source, commented out)
+- Queries Emby and Jellyfin sessions for active streams; each service is shown only when its API key is configured, so you can run either or both
 - Displays user, client, device, title, progress, and play state (playing/paused)
 - Shows running ffmpeg encodes inside remote Docker containers over SSH (Sonarr/Radarr)
 - Supports series names for TV episodes
@@ -56,6 +56,10 @@ $EDITOR ~/.config/whos-watching/.env
 Available settings:
 
 ```
+# Set the API key for each server you run; unset services are hidden.
+EMBY_URL=http://localhost:8096
+EMBY_API_KEY=
+
 JELLYFIN_URL=http://localhost:8097
 JELLYFIN_API_KEY=your_jellyfin_api_key_here
 
@@ -65,8 +69,8 @@ ENCODE_CONTAINERS=sonarr,radarr
 ENCODE_USE_SUDO=false
 ```
 
-Leave an API key blank to skip that service; leave `ENCODE_SSH_HOST` blank to skip
-encoding checks.
+Each section appears only when configured: a server shows up only if its API key is
+set, and encoding checks run only if `ENCODE_SSH_HOST` is set.
 
 ## Usage
 
